@@ -28,6 +28,15 @@ class Config:
     LOO_MAX_REMOVED = 12          # Maximum allowable dropped points (25% of a 48-point dataset)
     LOO_SD_THRESHOLD = 0.15       # Replicate SD threshold (15% of control) to prioritize a column
     EXTREME_COLS = {0, 1, 9, 10}  # Columns carrying highest/lowest active doses
+
+    # Low-dose biological plateau filter (single pass, non-recursive; see
+    # _run_loo_fits). Reference and check columns are deliberately disjoint
+    # so a candidate outlier well cannot influence its own yardstick.
+    BIO_PREFILTER_REFERENCE_COLS = {7, 8}  # Used to estimate the living-cell plateau
+    BIO_PREFILTER_CHECK_COLS = {9, 10}     # Low-dose columns screened against it
+    BIO_PREFILTER_DROP_FRACTION = 0.70     # Flag wells below 70% of the reference plateau
+    BIO_PREFILTER_MAX_REF_CV = 0.20        # Abstain if the reference itself has CV > 20%
+    BIO_PREFILTER_MAX_REMOVED = 2          # Hard cap on points removed by this filter
     
     # Realistic pharmacological parameter bounds
     HILL_SLOPE_MIN = -5.0         # Lower Hill bound (standard toxicological limit)
@@ -151,15 +160,41 @@ def parse_filename(filename, conc_dict):
     return cell_lines, drugs[:2]
 
 def _extract_drugs_from_string(text, conc_dict):
-    """Extracts known drugs and maps concentration reference points."""
+    """
+    Extracts known drugs and maps concentration reference points.
+
+    Keys are matched longest-first so that an explicit combination entry
+    registered in the concentration file (e.g. "cisPt+lenumlostat" as its
+    own row, with its own Well-1 concentration) takes priority over its
+    individual components.
+
+    Once a key claims a character span within the filename, any shorter
+    key whose match falls *inside* that already-claimed span is skipped
+    entirely rather than added as a separate drug. Without this check,
+    a registered combination such as "cisPt+lenumlostat" would be
+    silently split into two independent entries — the full combination
+    AND a duplicate "Lenumlostat" match found as a substring inside it —
+    corrupting the well-block assignment for that plate.
+    """
     text_lower = text.lower()
     found_drugs = []
+    claimed_spans = []  # (start, end) ranges already claimed by a longer/earlier key
     sorted_keys = sorted(conc_dict.keys(), key=len, reverse=True)
 
     for official_key in sorted_keys:
+        key_len = len(official_key)
         for m in re.finditer(re.escape(official_key), text_lower):
             start_idx = m.start()
-            sub_str = text_lower[start_idx + len(official_key):]
+            end_idx = start_idx + key_len
+
+            # Skip matches that fall inside a span already claimed by a
+            # longer (earlier-processed) key — e.g. "lenumlostat" found
+            # inside an already-matched "cispt+lenumlostat".
+            if any(start_idx < c_end and end_idx > c_start
+                   for c_start, c_end in claimed_spans):
+                continue
+
+            sub_str = text_lower[end_idx:]
             match_vol = re.search(r"\(?\s*(\d+)\s*\)?", sub_str)
             vol = 2
             if match_vol and match_vol.start() < 15:
@@ -180,14 +215,14 @@ def _extract_drugs_from_string(text, conc_dict):
                 base_conc_val = entry
                 exact_conc = False
 
-            if not any(d['search_index'] == start_idx for d in found_drugs):
-                found_drugs.append({
-                    'name': official_key.capitalize(),
-                    'volume': vol,
-                    'base_conc': base_conc_val,
-                    'exact_conc': exact_conc,
-                    'search_index': start_idx
-                })
+            found_drugs.append({
+                'name': official_key.capitalize(),
+                'volume': vol,
+                'base_conc': base_conc_val,
+                'exact_conc': exact_conc,
+                'search_index': start_idx
+            })
+            claimed_spans.append((start_idx, end_idx))
 
     found_drugs = sorted(found_drugs, key=lambda x: x['search_index'])
     filtered = []
@@ -552,30 +587,64 @@ def _run_loo_fits(df_valid, init_conc, control_mean, pseudo_zero_conc,
     initial_ss_res = np.sum(residuals**2)
     initial_aic = compute_aic(initial_ss_res, len(df_work), k_params)
 
-    # ── 2. BI-MODAL QC FILTER: PROJECT VERTICAL PREDICTION BANDS ─────────────
-    # Standardizing the prediction bounds using the clean parameter variance.
-    if len(df_work) > k_params:
-        X_vals = df_work["concentration"].values
-        Y_vals = df_work["value"].values
-        
-        # We catch outliers using the robust covariance projections
-        exp_outliers = detect_experimental_outliers(X_vals, Y_vals, popt, pcov)
-        
-        if np.any(exp_outliers):
-            n_exp_removed = np.sum(exp_outliers)
-            print(f"      [Prediction Band] Purged {n_exp_removed} vertical outlier(s) (bimodal dropouts).")
-            # Drop them from our working dataset
-            df_work = df_work[~exp_outliers].copy()
-            
-            # Refit to obtain finalized clean starting parameters for the LOO process
-            popt, r2, residuals, pcov = run_single_fit(
-                df_work["concentration"].values, df_work["value"].values,
-                init_conc, control_mean, pseudo_zero_conc, fixed_bottom=fixed_bottom
-            )
-            ic50 = 10**popt[2]
-            stats0 = _compute_se_and_ci(popt, pcov, len(df_work))
-            initial_ss_res = np.sum(residuals**2)
-            initial_aic = compute_aic(initial_ss_res, len(df_work), k_params)
+    # ── 2. LOW-DOSE BIOLOGICAL PLATEAU FILTER (single pass, non-recursive) ───
+    # Wells at the columns nearest the vehicle control are expected to be
+    # alive regardless of curve-fit uncertainty — there is no pharmacological
+    # reason for a very low dose to kill cells. A well reading far below the
+    # established living-cell plateau in this region is treated as a
+    # technical dropout (detachment, pipetting error, excess compound), not
+    # as evidence of a real effect.
+    #
+    # This deliberately does NOT reuse the earlier iterative/fit-based
+    # approach: recomputing the reference band from the progressively
+    # purged fit created a self-reinforcing loop that narrowed the band
+    # round after round, purging real plateau noise even in otherwise clean
+    # datasets. Here the reference is estimated ONCE, from a robust median
+    # of Config.BIO_PREFILTER_REFERENCE_COLS, and is never recalculated
+    # against itself. Only downward deviations at
+    # Config.BIO_PREFILTER_CHECK_COLS are flagged — a well reading *higher*
+    # than the plateau is not biologically implausible and is left to the
+    # LOO/AIC stage. A hard cap (Config.BIO_PREFILTER_MAX_REMOVED) limits
+    # how much this filter can remove per dataset, and it abstains entirely
+    # if the reference region itself is too noisy to trust (e.g. a compound
+    # active even at the lowest tested dose, or generalized technical
+    # noise) rather than purging blindly.
+    vertical_purge_points = []
+    ref_vals = df_work.loc[df_work["col_idx"].isin(Config.BIO_PREFILTER_REFERENCE_COLS), "value"].values
+    if len(ref_vals) >= 2:
+        ref_median = np.median(ref_vals)
+        ref_cv = (np.std(ref_vals) / ref_median) if ref_median > 0 else np.inf
+
+        if ref_median > 0 and ref_cv <= Config.BIO_PREFILTER_MAX_REF_CV:
+            drop_threshold = ref_median * Config.BIO_PREFILTER_DROP_FRACTION
+            candidates = df_work[
+                df_work["col_idx"].isin(Config.BIO_PREFILTER_CHECK_COLS)
+                & (df_work["value"] < drop_threshold)
+            ]
+            if not candidates.empty:
+                worst = candidates.sort_values("value").head(Config.BIO_PREFILTER_MAX_REMOVED)
+                print(f"      [Bio Plateau Filter] Purged {len(worst)} low-dose dropout(s) "
+                      f"(below {Config.BIO_PREFILTER_DROP_FRACTION:.0%} of the "
+                      f"{ref_median:.3f} reference plateau).")
+                for _, prow in worst.iterrows():
+                    vertical_purge_points.append({
+                        "concentration": prow["concentration"],
+                        "value": prow["value"],
+                    })
+                df_work = df_work.drop(worst.index).copy()
+
+                popt, r2, residuals, pcov = run_single_fit(
+                    df_work["concentration"].values, df_work["value"].values,
+                    init_conc, control_mean, pseudo_zero_conc, fixed_bottom=fixed_bottom
+                )
+                ic50 = 10**popt[2]
+                stats0 = _compute_se_and_ci(popt, pcov, len(df_work))
+                initial_ss_res = np.sum(residuals**2)
+                initial_aic = compute_aic(initial_ss_res, len(df_work), k_params)
+        else:
+            print(f"      [Bio Plateau Filter] Reference columns too noisy "
+                  f"(CV={ref_cv:.2f} > {Config.BIO_PREFILTER_MAX_REF_CV:.2f}) — "
+                  f"no reliable plateau to compare against, skipping.")
 
     results.append({
         "Run": "Initial Cleaned Fit",
@@ -591,6 +660,7 @@ def _run_loo_fits(df_valid, init_conc, control_mean, pseudo_zero_conc,
         "Fixed_Bottom": use_fixed_bottom,
         "Fallback_Pass2": False,
         "N_Removed": len(df_valid) - len(df_work),
+        "Vertical_Purge_Points": vertical_purge_points,
         **stats0,
         "IC50_Boot_lo": np.nan,
         "IC50_Boot_hi": np.nan,
@@ -874,6 +944,16 @@ def save_single_plot(res, valid_df, drug_name, volume, cell_line, file_name, fol
     fict_mask = (valid_df["col_idx"] == -1) if "col_idx" in valid_df.columns else pd.Series(False, index=valid_df.index)
     fict_df = valid_df[fict_mask]
 
+    # Points purged by the iterative vertical prediction-band filter
+    # (pre-LOO) should not be shown as ordinary valid points — they were
+    # excluded from the fit used to draw both curves below.
+    vp_points = run0.get("Vertical_Purge_Points", [])
+    if vp_points:
+        vp_set = {(round(p["concentration"], 10), round(p["value"], 10)) for p in vp_points}
+        real_df_key = list(zip(real_df["concentration"].round(10), real_df["value"].round(10)))
+        keep_mask = [k not in vp_set for k in real_df_key]
+        real_df = real_df[keep_mask]
+
     ax.set_xscale('log')
     ax.set_xlim(Config.X_LIM_MIN, Config.X_LIM_MAX)
 
@@ -881,6 +961,13 @@ def save_single_plot(res, valid_df, drug_name, volume, cell_line, file_name, fol
 
     ax.scatter(real_df["concentration"], real_df["value"],
                color='#2ec4b6', alpha=0.55, s=32, zorder=2, label='Valid points')
+
+    if vp_points:
+        vp_conc = [p["concentration"] for p in vp_points]
+        vp_val  = [p["value"] for p in vp_points]
+        ax.scatter(vp_conc, vp_val, color='#8d99ae', marker='P', s=90, zorder=5,
+                   linewidths=0.8, edgecolors='#2b2d42',
+                   label=f'Purged pre-fit ({len(vp_points)} pt., implausible/bimodal)')
 
     if len(fict_df) > 0:
         fict_conc_val = fict_df["concentration"].iloc[0]
