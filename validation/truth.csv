@@ -1,0 +1,7 @@
+dataset,true_IC50_uM,true_hill,true_top,true_bottom,noise_cv,description
+V1,3.0,-1.2,3.0,0.3,0.03,low noise (3%)
+V2,3.0,-1.2,3.0,0.3,0.06,moderate noise (6%)
+V3,3.0,-1.2,3.0,0.3,0.1,high noise (10%)
+V4,0.5,-2.5,3.0,0.3,0.06,"steep curve, low IC50"
+V5,10.0,-0.8,3.0,0.3,0.06,"shallow curve, high IC50"
+V6,3.0,-1.2,3.0,0.3,0.06,"moderate noise + one gross outlier (replicate 2, well 4 reads 70% low)"
