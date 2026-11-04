@@ -23,7 +23,7 @@ Quality-control decisions that are usually made by eye (which wells to exclude, 
 * **Same drug, two stocks.** Two stocks of one drug on the same plate also get a third, combined fit (see below).
 * **Diluted re-reads.** If a plate was also read after dilution, saturated wells can be recovered from the diluted read, without assuming a linear relationship (see below).
 * **Configurable serial dilution.** The dilution factor (1/3 by default) is read per drug from an optional fourth column of `Starting_Concentrations.xlsx`, so plates with 1/2, 1/3 or 1/4 dilutions run without editing the script.
-* **Uncertainty.** Parametric 95% confidence intervals from the fit covariance (t distribution), checked by simulation (see "Validation"), and a bootstrap interval (1,000 iterations, fixed seed 42, replicates resampled within each concentration) as a complementary check.
+* **Uncertainty.** Parametric 95% confidence intervals from the fit covariance (t distribution), checked by simulation (see "Validation"), and a bootstrap interval (1,000 iterations, fixed seed 42, replicates resampled within each concentration among the wells retained in the final fit; the outlier screening and point removal are not repeated in each resample) as a complementary check.
 * **No silent failures.** Every skipped or rejected block is reported on the console and in a `NotReached_*.txt` note. A drug name that is not in the registry is never fitted with an invented concentration.
 
 ## Requirements and installation
@@ -107,7 +107,7 @@ A spreadsheet in the same folder, named `Starting_Concentrations.xlsx`, with a h
 4. **Dose-response gate.** Otherwise the median of wells 1-2 is compared with the median of wells 10-11; the high-dose wells must sit at least 15% lower. If that fails, wells 11 and 12 are compared instead (a very potent drug may still be active at the lowest dose): the higher of the two is taken as the true baseline, and if the drop then reaches 15% a fictional top-anchor point is added at that value. Otherwise the block is rejected with `REJECTED_NO_DOSE_RESPONSE`.
 5. If the fit is accepted with R² of at least 0.90 it stands as it is. A late-drop curve that is poor and has too few dead wells to anchor from is queued for pass 2, which takes its lower plateau from the median bottom/top ratio of other blocks of the same cell line.
 6. The AIC-optimised LOO loop removes anomalous points one at a time, and the reinstatement pass restores any that no longer look anomalous.
-7. Uncertainty is estimated parametrically (the reference interval) and by bootstrap (a complementary check).
+7. Uncertainty is estimated parametrically (the interval to report) and by bootstrap (a complementary check).
 
 ## Two stocks of the same drug: combined fit
 
@@ -156,7 +156,7 @@ A block gives one or more rows: `Initial Cleaned Fit`; if its R² is below 0.90,
 | `File`, `Cell_Line`, `Drug`, `Stock_Volume_uL`, `Serial_Dilution_Factor`, `Well1_Concentration_uM` | what was fitted |
 | `Fit_Status`, `Run`, `Removed_Point`, `N_Removed` | outcome (`OK` or `REJECTED_NO_DOSE_RESPONSE`), the fitting step, the point removed in that step, and total points removed so far |
 | `IC50_uM`, `SE_IC50_uM` | IC50 and its standard error |
-| `IC50_CI95_lo`, `IC50_CI95_hi` | parametric 95% confidence interval (the reference interval) |
+| `IC50_CI95_lo`, `IC50_CI95_hi` | parametric 95% confidence interval (the interval to report) |
 | `IC50_Boot_lo`, `IC50_Boot_hi`, `IC50_Boot_median` | bootstrap 95% interval and median (final row of a block only); indicative, see "Known limitations" |
 | `HillSlope`, `Bottom`, `Top` | curve parameters, each with `SE_*` and `*_CI95_lo` / `*_CI95_hi` |
 | `R2`, `AIC` | goodness of fit |
@@ -212,7 +212,7 @@ The scripts to reproduce it are in `validation/simulation`.
 * The rules that look at fixed well positions (dose-response gate, anchoring, plateau checks) were tuned with 1/3 dilutions. They run with other factors but cover a different concentration range, so inspect the first results when you use a different dilution factor.
 * `Fallback_Pass2` is also set on some leave-one-out rows that follow a pre-cleaned initial fit, so do not read it as "pass 2 was used" on its own. Combine it with `Fixed_Bottom`.
 * For a drug not registered at 2 microlitres, the console may print `No entry ... vol=2`; the concentration actually used is the one registered for the volume written in the file name.
-* The bootstrap interval is optimistic with few replicates: with four replicates per dose it contained the true IC50 in about 79% of simulated datasets (71-84% by scenario). Use the parametric interval (`IC50_CI95_lo`, `IC50_CI95_hi`) as the reference and read the bootstrap interval as a rough check.
+* The bootstrap interval is optimistic with few replicates: with four replicates per dose it contained the true IC50 in about 79% of simulated datasets (71-84% by scenario). It is also conditional on the quality-control decisions: it resamples the wells retained in the final fit and does not repeat the outlier screening or point removal in each resample. Use the parametric interval (`IC50_CI95_lo`, `IC50_CI95_hi`) as the reference and read the bootstrap interval as a rough check.
 * Both intervals describe how precisely one plate defines the curve. They do not include experiment-to-experiment variability (cell passage, seeding density, reagent batches). To compare conditions, use the spread of the IC50 across independent experiments.
 * There is no automated test suite in the repository yet.
 
