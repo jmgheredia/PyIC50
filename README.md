@@ -2,7 +2,7 @@
 
 Automated, reproducible 4-parameter logistic (4PL) dose-response fitting and IC50 estimation from 96-well plate cytotoxicity and cell-viability assays.
 
-<!-- After the first Zenodo release, add the DOI badge here: [![DOI](https://zenodo.org/badge/DOI/YOUR-DOI.svg)](https://doi.org/YOUR-DOI) -->
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23942815.svg)](https://doi.org/10.5281/zenodo.23942815)
 
 **Status:** pre-release (0.x). Developed and run with Python 3.12 on Windows.
 
@@ -218,7 +218,7 @@ The scripts to reproduce it are in `validation/simulation`.
 
 ## Citation
 
-Please cite the archived release: [DOI to be added after the first Zenodo release].
+Please cite the archived release: https://doi.org/10.5281/zenodo.23942815. This DOI represents all versions and always resolves to the latest one; the DOI of version 0.1.0 is https://doi.org/10.5281/zenodo.23942816. The repository also provides a `CITATION.cff` file (GitHub: "Cite this repository").
 
 ## License
 
