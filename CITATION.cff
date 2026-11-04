@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata in this file."
+title: "PyIC50: automated, reproducible four-parameter logistic dose-response fitting and IC50 estimation from 96-well plate assays"
+type: software
+authors:
+  - family-names: "García-Heredia"
+    given-names: "José Manuel"
+    orcid: "https://orcid.org/0000-0003-3095-0050"
+    affiliation: "Departamento de Bioquímica Vegetal y Biología Molecular, Universidad de Sevilla, Seville 41012, Spain; Instituto de Biomedicina de Sevilla (IBIS)/HUVR/CSIC/Universidad de Sevilla, Hospital Universitario Virgen del Rocío, Ed. IBIS, Avda. Manuel Siurot S/N, Seville 41013, Spain; CIBER de Cáncer (CIBERONC), Instituto de Salud Carlos III, Madrid, Spain"
+repository-code: "https://github.com/jmgheredia/PyIC50"
+license: MIT
+version: 0.1.0
+abstract: "PyIC50 batch-processes folders of raw 96-well plate-reader exports, applies a fixed set of documented quality-control rules and fits a weighted four-parameter logistic (4PL) curve to each drug and cell-line block, producing one consolidated results table, one plot per curve and a note for every block that could not be fitted."
+keywords:
+  - dose-response
+  - IC50
+  - four-parameter logistic
+  - cell viability
+  - pharmacology
+  - Python
